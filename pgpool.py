@@ -1,23 +1,27 @@
+import sys
 import time
 import psycopg2
 from psycopg2 import Error as PoolError
 from psycopg2 import extensions as _ext
 
+sys.tracebacklimit = 0
 
 class ConnectionPool:
-    def __init__(self, min_size=5, con_min_life_ts=3600, **kwargs):
+    def __init__(self, min_pool_size=0, max_pool_size=2, con_min_life_ts=3600, **kwargs):
         self.kwargs = kwargs
-        self._min_size = min_size
+        self._min_size = min_pool_size
+        self._max_pool_size = max_pool_size
         self._pool = []
         self._track_conn_in_use = {}
-        self.con_min_life_ts = con_min_life_ts
-        self.track_connection_life_ts = {}
+        self._con_min_life_ts = con_min_life_ts
+        self._track_connection_life_ts = {}
+        self._connection_counter = 0
 
-        if self._min_size > 5:
-            PoolError("Minimum pool size should be < 5")
+        if self._max_pool_size > 10:
+            raise PoolError("Minimum pool size should be < 10")
 
         if con_min_life_ts > 3600:
-            self.con_min_life_ts = 3600
+            self._con_min_life_ts = 3600
 
         for _ in range(self._min_size):
             conn = self._connect()
@@ -32,10 +36,11 @@ class ConnectionPool:
                 port=self.kwargs.get("port"),
                 dbname=self.kwargs.get("dbname"),
             )
-            self.track_connection_life_ts[id(conn)] = int(time.time())
+            self._track_connection_life_ts[id(conn)] = int(time.time())
+            self._connection_counter += 1
             return conn
         except:
-            PoolError("Invalid DB credentials")
+            raise PoolError("Invalid DB credentials")
 
     def get_connection(self) -> _ext.connection:
         if self._pool:
@@ -43,6 +48,8 @@ class ConnectionPool:
             self._track_conn_in_use[id(conn)] = conn
             return conn
         else:
+            if self._connection_counter > self._max_pool_size:
+                raise PoolError("Pool exhausted")
             conn = self._connect()
             self._track_conn_in_use[id(conn)] = conn
             return conn
@@ -50,9 +57,9 @@ class ConnectionPool:
     def close(self, conn):
         if not conn.closed:
             if (
-                self.con_min_life_ts > 0
-                and int(time.time()) - self.track_connection_life_ts.get(id(conn))
-                > self.con_min_life_ts
+                self._con_min_life_ts > 0
+                and int(time.time()) - self._track_connection_life_ts.get(id(conn))
+                > self._con_min_life_ts
             ):
                 conn.close()
             else:
@@ -69,11 +76,11 @@ class ConnectionPool:
 
     def closeall(self) -> None:
         if self._pool:
-            PoolError("No connection exist in pool")
+            raise PoolError("No connection exist in pool")
         for con in self._pool:
             con.close()
         self._track_conn_in_use = {}
 
     @property
-    def pool_length(self) -> int:
+    def pool_size(self) -> int:
         return len(self._pool)
