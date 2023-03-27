@@ -6,8 +6,25 @@ from psycopg2 import extensions as _ext
 
 sys.tracebacklimit = 0
 
+
 class ConnectionPool:
-    def __init__(self, min_pool_size=0, max_pool_size=2, con_min_life_ts=3600, **kwargs):
+    def __init__(
+        self,
+        min_pool_size: int = 0,
+        max_pool_size: int = 2,
+        con_min_life_ts: int = 3600,
+        **kwargs: dict
+    ):
+        """
+        min_pool_size: int
+            initialize with minimum number of connection in the pool
+        max_pool_size: int
+            maximum connection that pool can hold
+        con_min_life_ts: int
+            lifespan of a connection in seconds
+        kwargs: dict
+            connection parameters
+        """
         self.kwargs = kwargs
         self._min_size = min_pool_size
         self._max_pool_size = max_pool_size
@@ -82,5 +99,11 @@ class ConnectionPool:
         self._track_conn_in_use = {}
 
     @property
-    def pool_size(self) -> int:
+    def available_connections(self) -> int:
+        """number of connection available to use"""
         return len(self._pool)
+
+    @property
+    def total_connection_pool(self) -> int:
+        """number of connection available + in use"""
+        return self._connection_counter
