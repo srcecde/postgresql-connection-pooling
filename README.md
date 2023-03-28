@@ -29,6 +29,7 @@ with conn1.cursor() as cur:
     cur.execute("SELECT 1")
     print(cur.fetchall())
 
+# closing connection
 con_obj.close(conn1)
 
 print(f"Available connections: {con_obj.available_connections}")
