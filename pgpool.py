@@ -1,5 +1,6 @@
 import sys
 import time
+from threading import Lock
 import psycopg2
 from psycopg2 import Error as PoolError
 from psycopg2 import extensions as _ext
@@ -33,6 +34,7 @@ class ConnectionPool:
         self._con_min_life_ts = con_min_life_ts
         self._track_connection_life_ts = {}
         self._connection_counter = 0
+        self._lock = Lock()
 
         if self._max_pool_size > 10:
             raise PoolError("Minimum pool size should be < 10")
@@ -60,43 +62,55 @@ class ConnectionPool:
             raise PoolError("Invalid DB credentials")
 
     def get_connection(self) -> _ext.connection:
-        if self._pool:
-            conn = self._pool.pop(0)
-            self._track_conn_in_use[id(conn)] = conn
-            return conn
-        else:
-            if self._connection_counter > self._max_pool_size:
-                raise PoolError("Pool exhausted")
-            conn = self._connect()
-            self._track_conn_in_use[id(conn)] = conn
-            return conn
+        try:
+            self._lock.acquire()
+            if self._pool:
+                conn = self._pool.pop(0)
+                self._track_conn_in_use[id(conn)] = conn
+                return conn
+            else:
+                if self._connection_counter > self._max_pool_size:
+                    raise PoolError("Pool exhausted")
+                conn = self._connect()
+                self._track_conn_in_use[id(conn)] = conn
+                return conn
+        finally:
+            self._lock.release()
 
     def close(self, conn):
-        if not conn.closed:
-            if (
-                self._con_min_life_ts > 0
-                and int(time.time()) - self._track_connection_life_ts.get(id(conn))
-                > self._con_min_life_ts
-            ):
-                conn.close()
-            else:
-                status = conn.info.transaction_status
-                if status == _ext.TRANSACTION_STATUS_UNKNOWN:
+        try:
+            self._lock.acquire()
+            if not conn.closed:
+                if (
+                    self._con_min_life_ts > 0
+                    and int(time.time()) - self._track_connection_life_ts.get(id(conn))
+                    > self._con_min_life_ts
+                ):
                     conn.close()
-                elif status != _ext.TRANSACTION_STATUS_IDLE:
-                    conn.rollback()
-                    self._pool.append(self._track_conn_in_use[id(conn)])
-                    del self._track_conn_in_use[id(conn)]
                 else:
-                    self._pool.append(self._track_conn_in_use[id(conn)])
-                    del self._track_conn_in_use[id(conn)]
+                    status = conn.info.transaction_status
+                    if status == _ext.TRANSACTION_STATUS_UNKNOWN:
+                        conn.close()
+                    elif status != _ext.TRANSACTION_STATUS_IDLE:
+                        conn.rollback()
+                        self._pool.append(self._track_conn_in_use[id(conn)])
+                        del self._track_conn_in_use[id(conn)]
+                    else:
+                        self._pool.append(self._track_conn_in_use[id(conn)])
+                        del self._track_conn_in_use[id(conn)]
+        finally:
+            self._lock.release()
 
     def closeall(self) -> None:
-        if self._pool:
-            raise PoolError("No connection exist in pool")
-        for con in self._pool:
-            con.close()
-        self._track_conn_in_use = {}
+        try:
+            self._lock.acquire()
+            if self._pool:
+                raise PoolError("No connection exist in pool")
+            for con in self._pool:
+                con.close()
+            self._track_conn_in_use = {}
+        finally:
+            self._lock.release()
 
     @property
     def available_connections(self) -> int:
